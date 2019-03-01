@@ -74,6 +74,8 @@ spec:
               properties:
                 port:
                   type: number
+                timeout:
+                  type: string
             skipAnalysis:
               type: boolean
             canaryAnalysis:
@@ -92,7 +94,7 @@ spec:
                   properties:
                     items:
                       type: object
-                      required: ['name', 'interval', 'threshold']
+                      required: ['name', 'threshold']
                       properties:
                         name:
                           type: string
@@ -101,6 +103,8 @@ spec:
                           pattern: "^[0-9]+(m|s)"
                         threshold:
                           type: number
+                        query:
+                          type: string
                 webhooks:
                   type: array
                   properties:

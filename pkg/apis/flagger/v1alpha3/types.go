@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha3
 
 import (
+	istiov1alpha3 "github.com/knative/pkg/apis/istio/v1alpha3"
 	hpav1 "k8s.io/api/autoscaling/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"time"
@@ -26,6 +27,7 @@ const (
 	CanaryKind              = "Canary"
 	ProgressDeadlineSeconds = 600
 	AnalysisInterval        = 60 * time.Second
+	MetricInterval          = "1m"
 )
 
 // +genclient
@@ -107,9 +109,13 @@ type CanaryStatus struct {
 // CanaryService is used to create ClusterIP services
 // and Istio Virtual Service
 type CanaryService struct {
-	Port     int32    `json:"port"`
-	Gateways []string `json:"gateways"`
-	Hosts    []string `json:"hosts"`
+	Port     int32                            `json:"port"`
+	Gateways []string                         `json:"gateways"`
+	Hosts    []string                         `json:"hosts"`
+	Match    []istiov1alpha3.HTTPMatchRequest `json:"match,omitempty"`
+	Rewrite  *istiov1alpha3.HTTPRewrite       `json:"rewrite,omitempty"`
+	Timeout  string                           `json:"timeout,omitempty"`
+	Retries  *istiov1alpha3.HTTPRetry         `json:"retries,omitempty"`
 }
 
 // CanaryAnalysis is used to describe how the analysis should be done
@@ -124,9 +130,11 @@ type CanaryAnalysis struct {
 
 // CanaryMetric holds the reference to Istio metrics used for canary analysis
 type CanaryMetric struct {
-	Name      string `json:"name"`
-	Interval  string `json:"interval"`
-	Threshold int    `json:"threshold"`
+	Name      string  `json:"name"`
+	Interval  string  `json:"interval,omitempty"`
+	Threshold float64 `json:"threshold"`
+	// +optional
+	Query string `json:"query,omitempty"`
 }
 
 // CanaryWebhook holds the reference to external checks used for canary analysis
@@ -166,4 +174,9 @@ func (c *Canary) GetAnalysisInterval() time.Duration {
 	}
 
 	return interval
+}
+
+// GetMetricInterval returns the metric interval default value (1m)
+func (c *Canary) GetMetricInterval() string {
+	return MetricInterval
 }

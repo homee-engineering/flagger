@@ -39,9 +39,22 @@ spec:
     # Istio virtual service host names (optional)
     hosts:
     - podinfo.example.com
-  # for emergency cases when you want to ship changes
-  # in production without analysing the canary
+    # HTTP match conditions (optional)
+    match:
+      - uri:
+          prefix: /
+    # HTTP rewrite (optional)
+    rewrite:
+      uri: /
+    # timeout for HTTP requests (optional)
+    timeout: 5s
+    # retry policy when a HTTP request fails (optional)
+    retries:
+      attempts: 3
+      perTryTimeout: 3s
+  # promote the canary without analysing it (default false)
   skipAnalysis: false
+  # define the canary analysis timing and KPIs
   canaryAnalysis:
     # schedule interval (default 60s)
     interval: 1m
@@ -96,7 +109,124 @@ spec:
 The target deployment should expose a TCP port that will be used by Flagger to create the ClusterIP Service and 
 the Istio Virtual Service. The container port from the target deployment should match the `service.port` value.
 
-### Canary Deployment
+### Virtual Service
+
+Flagger creates an Istio Virtual Service based on the Canary service spec.
+
+The following spec exposes the `frontend` workload inside the mesh on `frontend.test.svc.cluster.local:9898` 
+and outside the mesh on `frontend.example.com`. You'll have to specify an Istio ingress gateway for external hosts.
+
+```yaml
+apiVersion: flagger.app/v1alpha3
+kind: Canary
+metadata:
+  name: frontend
+  namespace: test
+  service:
+    # container port
+    port: 9898
+    # Istio gateways (optional)
+    gateways:
+    - public-gateway.istio-system.svc.cluster.local
+    # Istio virtual service host names (optional)
+    hosts:
+    - frontend.example.com
+    # Istio virtual service HTTP match conditions (optional)
+    match:
+      - uri:
+          prefix: /
+    # Istio virtual service HTTP rewrite (optional)
+    rewrite:
+      uri: /
+```
+
+For the above spec Flagger will generate the following virtual service:
+
+```yaml
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: frontend
+  namespace: test
+  ownerReferences:
+    - apiVersion: flagger.app/v1alpha3
+      blockOwnerDeletion: true
+      controller: true
+      kind: Canary
+      name: podinfo
+      uid: 3a4a40dd-3875-11e9-8e1d-42010a9c0fd1
+spec:
+  gateways:
+    - public-gateway.istio-system.svc.cluster.local
+    - mesh
+  hosts:
+    - frontend.example.com
+    - frontend
+  http:
+    - match:
+        - uri:
+            prefix: /
+      rewrite:
+        uri: /
+      route:
+        - destination:
+            host: frontend-primary
+            port:
+              number: 9898
+          weight: 100
+        - destination:
+            host: frontend-canary
+            port:
+              number: 9898
+          weight: 0
+```
+
+Flagger keeps in sync the virtual service with the canary service spec. Any direct modification of the virtual 
+service spec will be overwritten.
+
+To expose a workload inside the mesh on `http://backend.test.svc.cluster.local:9898`,
+the service spec can contain only the container port:
+
+```yaml
+apiVersion: flagger.app/v1alpha3
+kind: Canary
+metadata:
+  name: backend
+  namespace: test
+spec:
+  service:
+    port: 9898
+```
+
+Based on the above spec, Flagger will create several ClusterIP services like:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-primary
+  ownerReferences:
+  - apiVersion: flagger.app/v1alpha3
+    blockOwnerDeletion: true
+    controller: true
+    kind: Canary
+    name: backend
+    uid: 2ca1a9c7-2ef6-11e9-bd01-42010a9c0145
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 9898
+    protocol: TCP
+    targetPort: 9898
+  selector:
+    app: backend-primary
+```
+
+Flagger works for user facing apps exposed outside the cluster via an ingress gateway
+and for backend HTTP APIs that are accessible only from inside the mesh.
+
+### Canary Stages
 
 ![Flagger Canary Stages](https://raw.githubusercontent.com/stefanprodan/flagger/master/docs/diagrams/flagger-canary-steps.png)
 
@@ -155,6 +285,9 @@ Spec:
     # canary increment step
     # percentage (0-100)
     stepWeight: 2
+  # deploy straight to production without
+  # the metrics and webhook checks
+  skipAnalysis: false
 ```
 
 The above analysis, if it succeeds, will run for 25 minutes while validating the HTTP metrics and webhooks every minute.
@@ -249,6 +382,49 @@ histogram_quantile(0.99,
 ```
 
 > **Note** that the metric interval should be lower or equal to the control loop interval.
+
+### Custom Metrics
+
+The canary analysis can be extended with custom Prometheus queries. 
+
+```yaml
+  canaryAnalysis:
+    threshold: 1
+    maxWeight: 50
+    stepWeight: 5
+    metrics:
+    - name: "404s percentage"
+      threshold: 5
+      query: |
+        100 - sum(
+            rate(
+                istio_requests_total{
+                  reporter="destination",
+                  destination_workload_namespace="test",
+                  destination_workload="podinfo",
+                  response_code!="404"
+                }[1m]
+            )
+        )
+        /
+        sum(
+            rate(
+                istio_requests_total{
+                  reporter="destination",
+                  destination_workload_namespace="test",
+                  destination_workload="podinfo"
+                }[1m]
+            )
+        ) * 100
+```
+
+The above configuration validates the canary by checking
+if the HTTP 404 req/sec percentage is below 5 percent of the total traffic.
+If the 404s rate reaches the 5% threshold, then the canary fails.
+
+When specifying a query, Flagger will run the promql query and convert the result to float64. 
+Then it compares the query result value with the metric threshold value.
+
 
 ### Webhooks
 
